@@ -1,0 +1,7 @@
+# SQLite requires no external services — the database is a local file.
+#
+# Usage:
+#   DJANGO_SETTINGS_MODULE=settings.with_sqlite python manage.py migrate
+#   DJANGO_SETTINGS_MODULE=settings.with_sqlite python manage.py shell
+
+services: {}
