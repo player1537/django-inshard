@@ -8,7 +8,7 @@ from django.db.models import Value
 from django.db.models.expressions import F
 from django.db.models.lookups import Exact
 
-from .model_utils import ShardHash
+from .model_utils import shard_bucket
 
 if TYPE_CHECKING:
     from django.db import models
@@ -32,24 +32,24 @@ class Shard(NamedTuple):
     def parse(cls, value: str) -> Shard:
         """Parse a shard spec like ``'3of10'``."""
         try:
-            m_str, n_str = value.lower().split('of')
+            m_str, n_str = value.lower().split("of")
             m, n = int(m_str), int(n_str)
         except ValueError as exc:
             msg = f"shard must look like 'MofN', got {value!r}"
             raise ValueError(msg) from exc
         if not (1 <= m <= n):
-            msg = f'shard {value!r} must satisfy 1 <= M <= N'
+            msg = f"shard {value!r} must satisfy 1 <= M <= N"
             raise ValueError(msg)
         return cls(m, n)
 
     def __str__(self) -> str:
-        return f'{self.m}of{self.n}'
+        return f"{self.m}of{self.n}"
 
-    def bucket(self, e: models.Expression | None = None, /) -> ShardHash:
+    def bucket(self, e: models.Expression | None = None, /):
         """ORM expression for this shard's bucket index."""
         if e is None:
-            e = F('pk')
-        return ShardHash(e, Value(self.n))
+            e = F("pk")
+        return shard_bucket(e, Value(self.n))
 
     def q(self, e: models.Expression | None = None, /) -> Exact:
         """``Q`` object selecting rows in this shard."""
