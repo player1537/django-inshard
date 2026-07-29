@@ -8,7 +8,7 @@ from django.db.models import Value
 from django.db.models.expressions import F
 from django.db.models.lookups import Exact
 
-from .model_utils import shard_bucket
+from .model_utils import ShardBucket
 
 if TYPE_CHECKING:
     from django.db import models
@@ -49,7 +49,7 @@ class Shard(NamedTuple):
         """ORM expression for this shard's bucket index."""
         if e is None:
             e = F("pk")
-        return shard_bucket(e, Value(self.n))
+        return ShardBucket(e, Value(self.n))
 
     def q(self, e: models.Expression | None = None, /) -> Exact:
         """``Q`` object selecting rows in this shard."""

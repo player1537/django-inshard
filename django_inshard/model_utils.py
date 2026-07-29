@@ -8,13 +8,15 @@ from django.db import models
 from django.db.models import Value
 from django.db.models.expressions import CombinedExpression
 
-_SIGN_MASK = (1 << 63) - 1
-_SHIFTS = (33, 13, 47)
+_M = 2147483647  # 2^31 - 1, shared modulus for all hash variants
 
 __all__ = [
+    "ShardHash",
+    "ShardHash1",
+    "ShardHash2",
+    "ShardHash3",
+    "ShardBucket",
     "Xor",
-    "shard_bucket",
-    "shard_hash",
 ]
 
 
@@ -63,26 +65,70 @@ class Xor(models.Func):
         )
 
 
-def shard_hash(expr):
-    """Return an ORM expression computing the hash of *expr*.
+class ShardHash(models.Transform):
+    """Two-round LCG hash: ``((A * (((A * (expr % M)) + C) % M)) + C) % M``.
 
-    Uses XOR-shift mixing (``Xor`` + ``>>``) to avoid any multiplication
-    overflow, which SQLite's 64-bit signed integers cannot represent.
+    Subclasses supply ``_A`` and ``_C``.  The product ``(M - 1) * A < 2^63``
+    guarantees no overflow on SQLite's 64-bit signed integers.
     """
-    h = CombinedExpression(expr, "&", Value(_SIGN_MASK))
-    for shift in _SHIFTS:
-        h = Xor(h, CombinedExpression(h, ">>", Value(shift)))
-    return CombinedExpression(h, "&", Value(_SIGN_MASK))
+
+    template = "%(expressions)s"
+    output_field = models.IntegerField()
+    _A: int
+    _C: int
+
+    def __init__(self, expression, **extra):
+        x = CombinedExpression(expression, "%", Value(_M))
+        for _ in range(2):
+            x = CombinedExpression(
+                CombinedExpression(Value(self._A) * x, "+", Value(self._C)),
+                "%",
+                Value(_M),
+            )
+        super().__init__(x, **extra)
 
 
-def shard_bucket(expr, n):
-    """Return an expression for ``(shard_hash(expr) XOR shard_hash(n)) % n``.
+class ShardHash1(ShardHash):
+    _A = 1103515245  # glibc LCG
+    _C = 12345
+    lookup_name = "shardhash1"
+
+
+class ShardHash2(ShardHash):
+    _A = 1664525  # Numerical Recipes
+    _C = 1013904223
+    lookup_name = "shardhash2"
+
+
+class ShardHash3(ShardHash):
+    _A = 22695477  # Borland
+    _C = 1
+    lookup_name = "shardhash3"
+
+
+# Register the three variants so ``field__shardhash1`` etc. work.
+models.IntegerField.register_lookup(ShardHash1)
+models.IntegerField.register_lookup(ShardHash2)
+models.IntegerField.register_lookup(ShardHash3)
+
+
+class ShardBucket(models.Transform):
+    """Hash *expr* with Hash1, *n* with Hash2, XOR them, then Hash3 → mod *n*.
 
     The result is an integer in ``[0, n)``.
     """
-    return CombinedExpression(
-        Xor(shard_hash(expr), shard_hash(n)),
-        "%",
-        n,
-        output_field=models.IntegerField(),
-    )
+
+    template = "%(expressions)s"
+    output_field = models.IntegerField()
+
+    def __init__(self, expression, n, **extra):
+        inner = ShardHash3(
+            Xor(ShardHash1(expression), ShardHash2(n)),
+        )
+        result = CombinedExpression(
+            inner,
+            "%",
+            n,
+            output_field=models.IntegerField(),
+        )
+        super().__init__(result, **extra)
