@@ -7,6 +7,7 @@ from typing import Any
 from django.db import models
 from django.db.models import Value
 from django.db.models.expressions import CombinedExpression
+from django.db.models.functions import Cast, Mod
 
 _M = 2147483647  # 2^31 - 1, shared modulus for all hash variants
 
@@ -20,6 +21,17 @@ __all__ = [
 ]
 
 
+def _bigval(n: int) -> Cast:
+    """Return a ``Value`` explicitly cast to ``bigint``.
+
+    psycopg3's ``ClientCursor`` (used by Django 6+) uses client-side binding
+    which sends parameter values as text.  Without an explicit ``::bigint``
+    cast, PostgreSQL infers bare integer literals as ``int4``, causing
+    overflow in the LCG intermediate multiplications.
+    """
+    return Cast(Value(n), models.BigIntegerField())
+
+
 class Xor(models.Func):
     """Bitwise XOR of two integer expressions.
 
@@ -28,7 +40,7 @@ class Xor(models.Func):
     """
 
     arity = 2
-    output_field = models.IntegerField()
+    output_field = models.BigIntegerField()
 
     def as_sql(
         self,
@@ -73,18 +85,27 @@ class ShardHash(models.Transform):
     """
 
     template = "%(expressions)s"
-    output_field = models.IntegerField()
+    output_field = models.BigIntegerField()
     _A: int
     _C: int
 
     def __init__(self, expression, **extra):
-        x = CombinedExpression(expression, "%", Value(_M))
+        bigint = models.BigIntegerField()
+        x = Mod(expression, _bigval(_M), output_field=bigint)
         for _ in range(2):
-            x = CombinedExpression(
-                CombinedExpression(Value(self._A) * x, "+", Value(self._C)),
-                "%",
-                Value(_M),
+            mul = CombinedExpression(
+                _bigval(self._A),
+                "*",
+                x,
+                output_field=bigint,
             )
+            add = CombinedExpression(
+                mul,
+                "+",
+                _bigval(self._C),
+                output_field=bigint,
+            )
+            x = Mod(add, _bigval(_M), output_field=bigint)
         super().__init__(x, **extra)
 
 
@@ -122,13 +143,13 @@ class ShardBucket(models.Transform):
     output_field = models.IntegerField()
 
     def __init__(self, expression, n, **extra):
+        bigint = models.BigIntegerField()
         inner = ShardHash3(
             Xor(ShardHash1(expression), ShardHash2(n)),
         )
-        result = CombinedExpression(
+        result = Mod(
             inner,
-            "%",
             n,
-            output_field=models.IntegerField(),
+            output_field=bigint,
         )
         super().__init__(result, **extra)
